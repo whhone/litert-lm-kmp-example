@@ -1,5 +1,6 @@
 package com.google.ai.edge.litertlm.kmp
 
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -31,10 +32,22 @@ import com.google.ai.edge.litertlm.*
 @Composable
 @Preview
 fun App() {
+  val platform = getPlatformName()
+  println("Running on: $platform")
+
+  val modelPath = when (platform) {
+    PlatformName.ANDROID -> "/data/local/tmp/gemma3-1b-it-int4.litertlm"
+    PlatformName.DESKTOP -> "/usr/local/google/home/whhone/models/litertlm/gemma3-1b-it-int4.litertlm"
+    else -> throw IllegalStateException("Unsupported platform: $platform")
+  }
+
+  val cacheDir = getCacheDir()
+
   val engine = Engine(
     EngineConfig(
-      modelPath = "/usr/local/google/home/whhone/models/litertlm/gemma3-1b-it-int4.litertlm",
-      backend = Backend.CPU
+      modelPath = modelPath,
+      backend = Backend.CPU,
+      cacheDir = cacheDir,
     )
   )
   engine.initialize()
@@ -48,7 +61,7 @@ fun App() {
 
     Column(
       modifier = Modifier
-        .width(600.dp)
+        .fillMaxWidth()
         .background(MaterialTheme.colorScheme.primaryContainer)
         .safeContentPadding().fillMaxSize(),
     ) {
@@ -65,7 +78,9 @@ fun App() {
             horizontalArrangement = if (index % 2 == 0) Arrangement.End else Arrangement.Start
           ) {
             Text(
-              message, modifier = Modifier
+              message,
+              color = Color.White,
+              modifier = Modifier
                 .background(
                   if (index % 2 == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondary,
                   shape = RoundedCornerShape(8.dp)
@@ -82,7 +97,9 @@ fun App() {
               horizontalArrangement = Arrangement.Start
             ) {
               Text(
-                currentResponse, modifier = Modifier
+                currentResponse,
+                color = Color.White,
+                modifier = Modifier
                   .background(
                     MaterialTheme.colorScheme.secondary,
                     shape = RoundedCornerShape(8.dp)
