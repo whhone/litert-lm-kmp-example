@@ -12,12 +12,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -41,6 +41,16 @@ import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+enum class BackendOption(val label: String) {
+  CPU("CPU"),
+  GPU("GPU");
+
+  fun toBackend(): Backend = when (this) {
+    CPU -> Backend.CPU()
+    GPU -> Backend.GPU()
+  }
+}
+
 @Composable
 @Preview
 fun App() {
@@ -55,45 +65,12 @@ fun App() {
 
   val cacheDir = getCacheDir()
 
+  var selectedBackend by remember { mutableStateOf(BackendOption.CPU) }
   var engine by remember { mutableStateOf<Engine?>(null) }
   var conversation by remember { mutableStateOf<Conversation?>(null) }
-  var initStatus by remember { mutableStateOf("Initializing model...") }
+  var initStatus by remember { mutableStateOf("Backend: CPU (initializes on first message)") }
   var isInitialized by remember { mutableStateOf(false) }
-
-  LaunchedEffect(Unit) {
-    var localEngine: Engine? = null
-    var localConversation: Conversation? = null
-    try {
-      val (eng, conv) = withContext(Dispatchers.IO) {
-        val e = Engine(
-          EngineConfig(
-            modelPath = modelPath,
-            backend = Backend.CPU(),
-            cacheDir = cacheDir,
-          )
-        )
-        localEngine = e
-        e.initialize()
-        val c = e.createConversation(
-          ConversationConfig(systemInstruction = Contents.of("No emoji."))
-        )
-        localConversation = c
-        e to c
-      }
-      engine = eng
-      conversation = conv
-      isInitialized = true
-      initStatus = "Ready"
-    } catch (e: CancellationException) {
-      if (localConversation?.isAlive == true) localConversation.close()
-      if (localEngine?.isInitialized() == true) localEngine.close()
-      throw e
-    } catch (e: Exception) {
-      if (localConversation?.isAlive == true) localConversation.close()
-      if (localEngine?.isInitialized() == true) localEngine.close()
-      initStatus = "Model error: ${e.message}"
-    }
-  }
+  var isInitializing by remember { mutableStateOf(false) }
 
   DisposableEffect(Unit) {
     onDispose {
@@ -118,27 +95,62 @@ fun App() {
         .background(MaterialTheme.colorScheme.primaryContainer)
         .safeContentPadding().fillMaxSize(),
     ) {
-      if (!isInitialized) {
+      Row(
+        modifier = Modifier
+          .fillMaxWidth()
+          .background(MaterialTheme.colorScheme.surfaceVariant)
+          .padding(horizontal = 12.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+      ) {
         Row(
-          modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(8.dp),
-          horizontalArrangement = Arrangement.Center
+          horizontalArrangement = Arrangement.spacedBy(8.dp),
+          verticalAlignment = Alignment.CenterVertically,
         ) {
           Text(
-            initStatus,
+            "Backend:",
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.bodyMedium
+            style = MaterialTheme.typography.bodyMedium,
           )
+          BackendOption.entries.forEach { option ->
+            FilterChip(
+              selected = selectedBackend == option,
+              onClick = {
+                if (selectedBackend != option && !isInitializing && !isGenerating) {
+                  val oldConv = conversation
+                  val oldEng = engine
+                  selectedBackend = option
+                  conversation = null
+                  engine = null
+                  isInitialized = false
+                  messages = emptyList()
+                  currentResponse = ""
+                  initStatus = "Backend: ${option.label} (initializes on first message)"
+                  coroutineScope.launch(Dispatchers.IO) {
+                    if (oldConv?.isAlive == true) oldConv.close()
+                    if (oldEng?.isInitialized() == true) oldEng.close()
+                  }
+                }
+              },
+              enabled = !isInitializing && !isGenerating,
+              label = { Text(option.label) },
+            )
+          }
         }
+
+        Text(
+          initStatus,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
+          style = MaterialTheme.typography.bodySmall,
+          modifier = Modifier.padding(start = 8.dp),
+        )
       }
 
       LazyColumn(
         modifier = Modifier
           .weight(1f)
           .fillMaxWidth()
-          .padding(horizontal = 8.dp),
+          .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
       ) {
         itemsIndexed(messages) { index, message ->
@@ -190,21 +202,63 @@ fun App() {
           value = input,
           onValueChange = { input = it },
           modifier = Modifier.weight(1f),
-          placeholder = { Text(if (isInitialized) "Type a message..." else initStatus) },
-          enabled = isInitialized && !isGenerating,
+          placeholder = { Text(if (isInitializing) initStatus else "Type a message...") },
+          enabled = !isInitializing && !isGenerating,
         )
         Button(
           onClick = {
-            val conv = conversation ?: return@Button
             val prompt = input.trim()
-            if (prompt.isNotBlank() && !isGenerating) {
+            if (prompt.isNotBlank() && !isInitializing && !isGenerating) {
+              val targetBackend = selectedBackend
               input = ""
               messages = messages + prompt
               isGenerating = true
               currentResponse = ""
               coroutineScope.launch {
                 try {
-                  conv.sendMessageAsync(prompt)
+                  var activeConv = conversation
+                  if (activeConv == null) {
+                    isInitializing = true
+                    initStatus = "Initializing model (${targetBackend.label})..."
+                    var localEngine: Engine? = null
+                    var localConversation: Conversation? = null
+                    try {
+                      val (eng, conv) = withContext(Dispatchers.IO) {
+                        val e = Engine(
+                          EngineConfig(
+                            modelPath = modelPath,
+                            backend = targetBackend.toBackend(),
+                            cacheDir = cacheDir,
+                          )
+                        )
+                        localEngine = e
+                        e.initialize()
+                        val c = e.createConversation(
+                          ConversationConfig(systemInstruction = Contents.of("No emoji."))
+                        )
+                        localConversation = c
+                        e to c
+                      }
+                      engine = eng
+                      conversation = conv
+                      activeConv = conv
+                      isInitialized = true
+                      initStatus = "Ready (${targetBackend.label})"
+                    } catch (e: CancellationException) {
+                      if (localConversation?.isAlive == true) localConversation.close()
+                      if (localEngine?.isInitialized() == true) localEngine.close()
+                      throw e
+                    } catch (e: Exception) {
+                      if (localConversation?.isAlive == true) localConversation.close()
+                      if (localEngine?.isInitialized() == true) localEngine.close()
+                      initStatus = "Model error (${targetBackend.label}): ${e.message}"
+                      throw e
+                    } finally {
+                      isInitializing = false
+                    }
+                  }
+
+                  activeConv.sendMessageAsync(prompt)
                     .flowOn(Dispatchers.IO)
                     .collect { token ->
                       currentResponse += token.toString()
@@ -222,10 +276,10 @@ fun App() {
               }
             }
           },
-          enabled = isInitialized && !isGenerating && input.isNotBlank(),
+          enabled = !isInitializing && !isGenerating && input.isNotBlank(),
           modifier = Modifier.padding(start = 8.dp)
         ) {
-          Text(if (isGenerating) "..." else "Send")
+          Text(if (isInitializing || isGenerating) "..." else "Send")
         }
       }
     }
