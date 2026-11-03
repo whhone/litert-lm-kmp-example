@@ -25,10 +25,12 @@ in your IDE’s toolbar or build it directly from the terminal:
 - on macOS/Linux
   ```shell
   ./gradlew :composeApp:assembleDebug
+  ./gradlew :composeApp:installDebug
   ```
 - on Windows
   ```shell
   .\gradlew.bat :composeApp:assembleDebug
+  .\gradlew.bat :composeApp:installDebug
   ```
 
 ### Build and Run Desktop (JVM) Application
